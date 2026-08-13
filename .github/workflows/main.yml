@@ -1,4 +1,4 @@
-name: Build TEST MITRA APK
+name: Build TEST MITRA Android APK
 
 on:
   workflow_dispatch:
@@ -6,165 +6,188 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
-  build-apk:
+  build:
     name: Build TEST MITRA Android APK
     runs-on: ubuntu-latest
 
     steps:
 
-      # --------------------------------------------------
+      # ---------------------------------------------------------
       # 1. Checkout GitHub repository
-      # --------------------------------------------------
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
-      # 2. Find and extract uploaded TEST MITRA ZIP
-      # --------------------------------------------------
-      - name: Extract TEST MITRA ZIP
-        shell: bash
-        run: |
-          set -e
-
-          echo "Searching for uploaded ZIP..."
-
-          ZIP_FILE=$(find . -maxdepth 3 -type f -name "*.zip" -print -quit)
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found in repository."
-            exit 1
-          fi
-
-          echo "ZIP found:"
-          echo "$ZIP_FILE"
-
-          rm -rf "$GITHUB_WORKSPACE/android-project"
-          mkdir -p "$GITHUB_WORKSPACE/android-project"
-
-          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/android-project"
-
-          echo "ZIP extracted successfully."
-
-          echo "Searching for Gradle wrapper..."
-
-          GRADLEW_FILE=$(find "$GITHUB_WORKSPACE/android-project" \
-            -type f \
-            -name "gradlew" \
-            -print -quit)
-
-          if [ -z "$GRADLEW_FILE" ]; then
-            echo "ERROR: gradlew was not found inside the uploaded ZIP."
-            echo ""
-            echo "Files found in extracted project:"
-            find "$GITHUB_WORKSPACE/android-project" \
-              -maxdepth 5 \
-              -type f | head -300
-            exit 1
-          fi
-
-          PROJECT_DIR=$(dirname "$GRADLEW_FILE")
-
-          echo "Gradle wrapper found:"
-          echo "$GRADLEW_FILE"
-
-          echo "Android project directory:"
-          echo "$PROJECT_DIR"
-
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ] &&
-             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
-            echo "ERROR: settings.gradle or settings.gradle.kts not found."
-            exit 1
-          fi
-
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "WARNING: app directory not found directly in PROJECT_DIR."
-            echo "Checking project structure..."
-            find "$PROJECT_DIR" -maxdepth 2 -type d
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-      # --------------------------------------------------
-      # 3. Setup Java
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 2. Setup Java
+      # ---------------------------------------------------------
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-          cache: gradle
+          java-version: '17'
 
-      # --------------------------------------------------
-      # 4. Setup Android SDK
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 3. Setup Android SDK
+      # ---------------------------------------------------------
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # --------------------------------------------------
-      # 5. Configure Supabase
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 4. Install required Android SDK packages
+      # ---------------------------------------------------------
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # ---------------------------------------------------------
+      # 5. Find and extract uploaded ZIP
+      # ---------------------------------------------------------
+      - name: Extract Android project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for ZIP file..."
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found."
+            exit 1
+          fi
+
+          echo "ZIP found: $ZIP_FILE"
+
+          rm -rf extracted_project
+          mkdir -p extracted_project
+
+          unzip -o "$ZIP_FILE" -d extracted_project
+
+          echo "ZIP extracted successfully."
+
+          echo "Extracted files:"
+          find extracted_project -maxdepth 4 -type f | head -200
+
+      # ---------------------------------------------------------
+      # 6. Automatically locate actual Android project
+      # ---------------------------------------------------------
+      - name: Locate Android project
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for Android project..."
+
+          PROJECT_DIR=""
+
+          # First preference: Gradle wrapper
+          GRADLEW=$(find extracted_project \
+            -type f \
+            -name "gradlew" \
+            -print -quit)
+
+          if [ -n "$GRADLEW" ]; then
+            PROJECT_DIR=$(dirname "$GRADLEW")
+          fi
+
+          # Second preference: settings.gradle / settings.gradle.kts
+          if [ -z "$PROJECT_DIR" ]; then
+            SETTINGS_FILE=$(find extracted_project \
+              -type f \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              -print -quit)
+
+            if [ -n "$SETTINGS_FILE" ]; then
+              PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+            fi
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android Gradle project not found."
+            echo ""
+            echo "Available project files:"
+            find extracted_project -type f | head -300
+            exit 1
+          fi
+
+          echo "Android project found at:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------
+      # 7. Configure Supabase
+      # ---------------------------------------------------------
       - name: Configure Supabase
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         shell: bash
         run: |
           set -e
 
           echo "Configuring Supabase..."
 
-          cd "$PROJECT_DIR"
-
-          if [ -z "$SUPABASE_URL" ]; then
-            echo "WARNING: SUPABASE_URL GitHub Secret is not configured."
-          else
+          if [ -n "${{ secrets.SUPABASE_URL }}" ]; then
             echo "SUPABASE_URL is available."
-          fi
-
-          if [ -z "$SUPABASE_ANON_KEY" ]; then
-            echo "WARNING: SUPABASE_ANON_KEY GitHub Secret is not configured."
           else
+            echo "WARNING: SUPABASE_URL secret is not configured."
+          fi
+
+          if [ -n "${{ secrets.SUPABASE_ANON_KEY }}" ]; then
             echo "SUPABASE_ANON_KEY is available."
+          else
+            echo "WARNING: SUPABASE_ANON_KEY secret is not configured."
           fi
 
-          # Create local.properties only if the project uses it.
-          # Values are NOT printed to logs.
-          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
-            {
-              echo "SUPABASE_URL=$SUPABASE_URL"
-              echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
-            } > local.properties
-          fi
+          # Create local.properties if the project needs it
+          cat > "$PROJECT_DIR/local.properties" <<EOF
+          sdk.dir=$ANDROID_HOME
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          EOF
 
-          echo "Supabase configuration step completed."
+          echo "Supabase configuration completed."
 
-      # --------------------------------------------------
-      # 6. Make Gradle executable
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 8. Make Gradle executable
+      # ---------------------------------------------------------
       - name: Make Gradle executable
         shell: bash
         run: |
           set -e
 
-          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
-            echo "ERROR: gradlew not found:"
-            echo "$PROJECT_DIR/gradlew"
+          cd "$PROJECT_DIR"
+
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew not found."
+            echo "Current directory:"
+            pwd
+            echo "Files:"
+            ls -la
             exit 1
           fi
 
-          chmod +x "$PROJECT_DIR/gradlew"
+          chmod +x ./gradlew
 
-          echo "Gradle wrapper is executable."
+          echo "Gradle wrapper is ready."
 
-      # --------------------------------------------------
-      # 7. Check project
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 9. Verify Android project
+      # ---------------------------------------------------------
       - name: Verify Android project
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
+
+          cd "$PROJECT_DIR"
 
           echo "Project directory:"
           pwd
@@ -177,88 +200,86 @@ jobs:
           echo "Gradle version:"
           ./gradlew --version
 
-      # --------------------------------------------------
-      # 8. Clean build
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 10. Clean project
+      # ---------------------------------------------------------
       - name: Clean project
-        working-directory: ${{ env.PROJECT_DIR }}
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         shell: bash
         run: |
           set -e
 
-          ./gradlew clean --stacktrace
+          cd "$PROJECT_DIR"
 
-      # --------------------------------------------------
-      # 9. Build DEBUG APK
-      # --------------------------------------------------
+          ./gradlew clean --no-daemon
+
+      # ---------------------------------------------------------
+      # 11. Build Debug APK
+      # ---------------------------------------------------------
       - name: Build Debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         shell: bash
         run: |
           set -e
 
-          echo "Starting TEST MITRA APK build..."
+          cd "$PROJECT_DIR"
 
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          echo "Starting APK build..."
 
-          echo "APK build command completed successfully."
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
 
-      # --------------------------------------------------
-      # 10. Find generated APK
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 12. Find generated APK
+      # ---------------------------------------------------------
       - name: Find generated APK
         shell: bash
         run: |
           set -e
 
-          echo "Searching for APK..."
+          echo "Searching for generated APK..."
 
-          find "$PROJECT_DIR" \
+          APK=$(find "$PROJECT_DIR" \
             -type f \
             -name "*.apk" \
-            -print
+            -print | head -n 1)
 
-          APK_COUNT=$(find "$PROJECT_DIR" \
-            -type f \
-            -name "*.apk" | wc -l)
-
-          if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No APK was generated."
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            echo ""
+            echo "Build directory:"
+            find "$PROJECT_DIR" -maxdepth 6 -type f | grep -E "\.(apk|aab)$" || true
             exit 1
           fi
 
-          echo "APK generated successfully."
+          echo "APK found:"
+          echo "$APK"
 
-      # --------------------------------------------------
-      # 11. Upload APK as GitHub Artifact
-      # --------------------------------------------------
+          mkdir -p "$GITHUB_WORKSPACE/apk-output"
+
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/apk-output/TEST-MITRA.apk"
+
+          echo "APK_PATH=$GITHUB_WORKSPACE/apk-output/TEST-MITRA.apk" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------
+      # 13. Upload APK
+      # ---------------------------------------------------------
       - name: Upload TEST MITRA APK
         uses: actions/upload-artifact@v4
         with:
           name: TEST-MITRA-APK
-          path: |
-            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/**/*.apk
+          path: apk-output/TEST-MITRA.apk
           if-no-files-found: error
-          retention-days: 30
 
-      # --------------------------------------------------
-      # 12. Final success message
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 14. Build completed
+      # ---------------------------------------------------------
       - name: Build completed
         shell: bash
         run: |
+          echo "======================================"
+          echo "TEST MITRA APK BUILD SUCCESSFUL"
+          echo "======================================"
           echo ""
-          echo "=============================================="
-          echo "       TEST MITRA APK BUILD SUCCESSFUL"
-          echo "=============================================="
-          echo ""
-          echo "APK has been uploaded to GitHub Actions."
-          echo "Open the Artifacts section and download:"
-          echo "TEST-MITRA-APK"
-          echo ""
+          echo "APK:"
+          echo "$APK_PATH"
