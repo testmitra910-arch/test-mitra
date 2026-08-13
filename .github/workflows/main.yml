@@ -12,22 +12,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
+
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Setup Java 17
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Setup Android SDK
+      # 3. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 4. Install required Android SDK packages
+      # 4. Android SDK packages
       - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses || true
@@ -35,26 +36,24 @@ jobs:
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
-      # 5. Find uploaded ZIP
+      # 5. Find ZIP
       - name: Find TEST MITRA ZIP
         id: zip
         shell: bash
         run: |
           set -e
 
-          echo "Searching for ZIP..."
-
           ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found."
+            echo "ERROR: ZIP file not found."
             exit 1
           fi
 
           echo "ZIP found: $ZIP_FILE"
           echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
 
-      # 6. Extract ZIP automatically
+      # 6. Extract ZIP
       - name: Extract TEST MITRA ZIP
         shell: bash
         run: |
@@ -67,9 +66,6 @@ jobs:
 
           echo "ZIP extracted successfully."
 
-          echo "Extracted files:"
-          find extracted_project -maxdepth 3 -type f | head -100
-
       # 7. Locate Android project
       - name: Locate Android project
         id: project
@@ -77,23 +73,18 @@ jobs:
         run: |
           set -e
 
-          PROJECT_DIR=$(find "$GITHUB_WORKSPACE/extracted_project" \
-            -name "settings.gradle" \
-            -o -name "settings.gradle.kts" \
+          SETTINGS_FILE=$(find "$GITHUB_WORKSPACE/extracted_project" \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
             | head -n 1)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: settings.gradle or settings.gradle.kts not found."
-            echo "Searching for build.gradle files..."
-            find "$GITHUB_WORKSPACE/extracted_project" \
-              -name "build.gradle" \
-              -o -name "build.gradle.kts"
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Android project not found."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$PROJECT_DIR")
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
 
-          echo "Android project found:"
+          echo "Android project:"
           echo "$PROJECT_DIR"
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
@@ -101,7 +92,6 @@ jobs:
       # 8. Configure Supabase
       - name: Configure Supabase
         working-directory: ${{ steps.project.outputs.project_dir }}
-        shell: bash
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -109,15 +99,15 @@ jobs:
           echo "Configuring Supabase..."
 
           if [ -n "$SUPABASE_URL" ]; then
-            echo "SUPABASE_URL is configured."
+            echo "SUPABASE_URL configured."
           else
-            echo "WARNING: SUPABASE_URL secret is not configured."
+            echo "WARNING: SUPABASE_URL not configured."
           fi
 
           if [ -n "$SUPABASE_ANON_KEY" ]; then
-            echo "SUPABASE_ANON_KEY is configured."
+            echo "SUPABASE_ANON_KEY configured."
           else
-            echo "WARNING: SUPABASE_ANON_KEY secret is not configured."
+            echo "WARNING: SUPABASE_ANON_KEY not configured."
           fi
 
       # 9. Setup Gradle 9.3.1
@@ -126,38 +116,69 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      # 10. Check Gradle version
+      # 10. Create missing debug.keystore
+      - name: Create debug.keystore
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking debug.keystore..."
+
+          if [ ! -f "debug.keystore" ]; then
+            echo "debug.keystore not found."
+            echo "Creating debug.keystore..."
+
+            keytool -genkeypair \
+              -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+
+            echo "debug.keystore created successfully."
+          else
+            echo "debug.keystore already exists."
+          fi
+
+          ls -lh debug.keystore
+
+      # 11. Check Gradle
       - name: Check Gradle version
         working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           gradle --version
 
-      # 11. Verify Android project
+      # 12. Verify project
       - name: Verify Android project
         working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
-          echo "Project directory:"
+          echo "Project:"
           pwd
 
-          echo "Project files:"
+          echo "Files:"
           ls -la
 
-          echo "App directory:"
+          echo "App:"
           ls -la app || true
 
-      # 12. Clean project
+      # 13. Clean
       - name: Clean project
         working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           gradle clean --no-daemon
 
-      # 13. Build Debug APK
+      # 14. Build APK
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           gradle assembleDebug --no-daemon --stacktrace
 
-      # 14. Find APK
+      # 15. Find APK
       - name: Find APK
         id: apk
         shell: bash
@@ -170,7 +191,7 @@ jobs:
             | head -n 1)
 
           if [ -z "$APK_FILE" ]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: APK not generated."
             exit 1
           fi
 
@@ -179,7 +200,7 @@ jobs:
 
           echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
 
-      # 15. Upload APK
+      # 16. Upload APK
       - name: Upload TEST MITRA APK
         uses: actions/upload-artifact@v4
         with:
@@ -187,7 +208,7 @@ jobs:
           path: ${{ steps.apk.outputs.apk_file }}
           if-no-files-found: error
 
-      # 16. Build completed
+      # 17. Done
       - name: Build completed
         run: |
           echo "======================================"
